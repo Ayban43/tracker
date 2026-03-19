@@ -111,3 +111,104 @@ values
   ('8a5eb18a-bda9-4cf9-99a8-08e18f5f6798', 'Person 6')
 on conflict do nothing;
 
+
+-- Guard table for no-login PIN confirmation on Carm received payments.
+create table if not exists public.trip_guard_settings (
+  trip_id uuid primary key references public.trips(id) on delete cascade,
+  carm_receive_member_id uuid references public.members(id) on delete set null,
+  carm_receive_pin_sha256 text,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.trip_guard_settings (trip_id, carm_receive_member_id)
+select t.id,
+  (
+    select m.id
+    from public.members m
+    where m.trip_id = t.id
+      and lower(trim(m.name)) in ('carm', 'carms')
+    order by m.created_at asc
+    limit 1
+  )
+from public.trips t
+on conflict (trip_id) do update
+set carm_receive_member_id = excluded.carm_receive_member_id;
+
+-- Keep read/insert/delete open, but block anon updates to shares payable to Carm.
+drop policy if exists "Allow all shares" on public.expense_shares;
+drop policy if exists "Allow all shares read" on public.expense_shares;
+drop policy if exists "Allow all shares insert" on public.expense_shares;
+drop policy if exists "Allow all shares delete" on public.expense_shares;
+drop policy if exists "Allow share updates except Carm receipts" on public.expense_shares;
+
+create policy "Allow all shares read"
+on public.expense_shares for select
+using (true);
+
+create policy "Allow all shares insert"
+on public.expense_shares for insert
+with check (true);
+
+create policy "Allow all shares delete"
+on public.expense_shares for delete
+using (true);
+
+create policy "Allow share updates except Carm receipts"
+on public.expense_shares for update
+using (
+  not exists (
+    select 1
+    from public.expenses e
+    join public.members payer on payer.id = e.paid_by_member_id
+    where e.id = expense_shares.expense_id
+      and lower(trim(payer.name)) in ('carm', 'carms')
+  )
+)
+with check (
+  not exists (
+    select 1
+    from public.expenses e
+    join public.members payer on payer.id = e.paid_by_member_id
+    where e.id = expense_shares.expense_id
+      and lower(trim(payer.name)) in ('carm', 'carms')
+  )
+);
+
+-- Member PIN settings for receiver-confirmed settlements (default PIN: 1234).
+create table if not exists public.member_pin_settings (
+  trip_id uuid not null references public.trips(id) on delete cascade,
+  member_id uuid not null references public.members(id) on delete cascade,
+  pin_sha256 text not null,
+  updated_at timestamptz not null default now(),
+  primary key (trip_id, member_id)
+);
+
+alter table public.member_pin_settings enable row level security;
+
+drop policy if exists "No direct access to member pin settings" on public.member_pin_settings;
+create policy "No direct access to member pin settings"
+on public.member_pin_settings for all
+using (false)
+with check (false);
+
+insert into public.member_pin_settings (trip_id, member_id, pin_sha256)
+select m.trip_id, m.id, encode(digest('1234', 'sha256'), 'hex')
+from public.members m
+on conflict (trip_id, member_id) do nothing;
+
+create or replace function public.set_default_member_pin()
+returns trigger
+language plpgsql
+as $$
+begin
+  insert into public.member_pin_settings (trip_id, member_id, pin_sha256)
+  values (new.trip_id, new.id, encode(digest('1234', 'sha256'), 'hex'))
+  on conflict (trip_id, member_id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_set_default_member_pin on public.members;
+create trigger trg_set_default_member_pin
+after insert on public.members
+for each row execute function public.set_default_member_pin();

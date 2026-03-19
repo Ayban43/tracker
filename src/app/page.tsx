@@ -118,6 +118,37 @@ export default function Home() {
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null);
   const [receiptLightbox, setReceiptLightbox] = useState<{ url: string; alt: string } | null>(null);
   const [unsettleConfirm, setUnsettleConfirm] = useState<{ expenseId: string; share: ExpenseShare } | null>(null);
+  const [markAllPaidConfirm, setMarkAllPaidConfirm] = useState<{
+    expenseId: string;
+    title: string;
+    count: number;
+    payerMemberId: string;
+    payerName: string;
+  } | null>(null);
+  const [balanceDetailsMemberId, setBalanceDetailsMemberId] = useState<string | null>(null);
+  const [markPayToConfirm, setMarkPayToConfirm] = useState<{
+    debtorId: string;
+    payerId: string;
+    debtorName: string;
+    payerName: string;
+    cents: number;
+  } | null>(null);
+  const [pinTargetMemberId, setPinTargetMemberId] = useState<string | null>(null);
+  const [currentPinInput, setCurrentPinInput] = useState("");
+  const [newPinInput, setNewPinInput] = useState("");
+  const [confirmNewPinInput, setConfirmNewPinInput] = useState("");
+  const [pinChangeError, setPinChangeError] = useState<string | null>(null);
+  const [pinChangeSuccess, setPinChangeSuccess] = useState<string | null>(null);
+  const [isChangingPin, setIsChangingPin] = useState(false);
+  const [sharePinConfirm, setSharePinConfirm] = useState<{
+    expenseId: string;
+    share: ExpenseShare;
+    next: boolean;
+    receiverName: string;
+  } | null>(null);
+  const [isMarkingPayTo, setIsMarkingPayTo] = useState<string | null>(null);
+  const [confirmPin, setConfirmPin] = useState("");
+  const [confirmPinError, setConfirmPinError] = useState<string | null>(null);
   const [settleUndo, setSettleUndo] = useState<{ expenseId: string; share: ExpenseShare } | null>(null);
   const settleUndoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -299,6 +330,71 @@ export default function Home() {
 
     return { totalSpent, unsettled, ledger, totalShares, settledShares };
   }, [expenses, members]);
+
+  const balanceDetailsByMemberId = useMemo(() => {
+    const result = new Map<string, { payTo: Array<{ memberId: string; cents: number }>; receiveFrom: Array<{ memberId: string; cents: number }> }>();
+
+    members.forEach((member) => {
+      result.set(member.id, { payTo: [], receiveFrom: [] });
+    });
+
+    const payToMapByMember = new Map<string, Map<string, number>>();
+    const receiveFromMapByMember = new Map<string, Map<string, number>>();
+    members.forEach((member) => {
+      payToMapByMember.set(member.id, new Map());
+      receiveFromMapByMember.set(member.id, new Map());
+    });
+
+    expenses.forEach((expense) => {
+      expense.shares.forEach((share) => {
+        if (share.is_settled || share.owed_cents <= 0) return;
+        if (share.member_id === expense.paid_by_member_id) return;
+
+        const payerId = expense.paid_by_member_id;
+        const debtorId = share.member_id;
+
+        const debtorPayMap = payToMapByMember.get(debtorId);
+        if (debtorPayMap) {
+          debtorPayMap.set(payerId, (debtorPayMap.get(payerId) ?? 0) + share.owed_cents);
+        }
+
+        const payerReceiveMap = receiveFromMapByMember.get(payerId);
+        if (payerReceiveMap) {
+          payerReceiveMap.set(debtorId, (payerReceiveMap.get(debtorId) ?? 0) + share.owed_cents);
+        }
+      });
+    });
+
+    members.forEach((member) => {
+      const payTo = [...(payToMapByMember.get(member.id)?.entries() ?? [])]
+        .map(([memberId, cents]) => ({ memberId, cents }))
+        .sort(
+          (a, b) =>
+            (memberOrderById.get(a.memberId) ?? Number.MAX_SAFE_INTEGER) -
+            (memberOrderById.get(b.memberId) ?? Number.MAX_SAFE_INTEGER),
+        );
+
+      const receiveFrom = [...(receiveFromMapByMember.get(member.id)?.entries() ?? [])]
+        .map(([memberId, cents]) => ({ memberId, cents }))
+        .sort(
+          (a, b) =>
+            (memberOrderById.get(a.memberId) ?? Number.MAX_SAFE_INTEGER) -
+            (memberOrderById.get(b.memberId) ?? Number.MAX_SAFE_INTEGER),
+        );
+
+      result.set(member.id, { payTo, receiveFrom });
+    });
+
+    return result;
+  }, [expenses, members, memberOrderById]);
+  const selectedBalanceEntry = useMemo(
+    () => summary.ledger.find((entry) => entry.member.id === balanceDetailsMemberId) ?? null,
+    [balanceDetailsMemberId, summary.ledger],
+  );
+  const selectedBalanceDetails = useMemo(
+    () => (balanceDetailsMemberId ? balanceDetailsByMemberId.get(balanceDetailsMemberId) ?? null : null),
+    [balanceDetailsByMemberId, balanceDetailsMemberId],
+  );
 
   const filteredExpenses = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -576,26 +672,138 @@ export default function Home() {
     }
   }
 
+  async function toggleShareWithPin(expenseId: string, share: ExpenseShare, next: boolean, pin: string): Promise<boolean> {
+    if (!supabase) return false;
+    const providedPin = pin.trim();
+    if (!providedPin) {
+      setConfirmPinError("Enter receiver PIN.");
+      return false;
+    }
+
+    const { data, error: fnError } = await supabase.functions.invoke("toggle-share-with-pin", {
+      body: {
+        tripId,
+        shareId: share.id,
+        next,
+        pin: providedPin,
+      },
+    });
+
+    if (fnError || (data as { error?: string } | null)?.error) {
+      setConfirmPinError((data as { error?: string } | null)?.error ?? fnError?.message ?? "Failed to verify PIN.");
+      return false;
+    }
+
+    await reload();
+    return true;
+  }
+
   function onSettledChange(expenseId: string, share: ExpenseShare, next: boolean) {
-    if (share.is_settled && !next) {
-      setUnsettleConfirm({ expenseId, share });
-      return;
+    const expense = expenses.find((item) => item.id === expenseId);
+    const receiverName = expense ? membersById.get(expense.paid_by_member_id)?.name ?? "Receiver" : "Receiver";
+    setConfirmPin("");
+    setConfirmPinError(null);
+    setSharePinConfirm({ expenseId, share, next, receiverName });
+  }
+
+  async function markAllAsPaid(expenseId: string, pin?: string): Promise<boolean> {
+    if (!supabase) return false;
+
+    const expense = expenses.find((item) => item.id === expenseId);
+    if (!expense) return false;
+    const providedPin = pin?.trim() ?? "";
+    if (!providedPin) {
+      setConfirmPinError("Enter receiver PIN to continue.");
+      return false;
     }
 
-    if (!share.is_settled && next) {
-      void toggleSettled(expenseId, share, true);
-      if (settleUndoTimerRef.current) {
-        clearTimeout(settleUndoTimerRef.current);
-      }
-      setSettleUndo({ expenseId, share });
-      settleUndoTimerRef.current = setTimeout(() => {
-        setSettleUndo(null);
-        settleUndoTimerRef.current = null;
-      }, 5000);
-      return;
+    const { data, error: fnError } = await supabase.functions.invoke("confirm-carm-receipt", {
+      body: {
+        tripId,
+        expenseId,
+        pin: providedPin,
+      },
+    });
+
+    if (fnError || (data as { error?: string } | null)?.error) {
+      setConfirmPinError((data as { error?: string } | null)?.error ?? fnError?.message ?? "Failed to verify PIN.");
+      return false;
     }
 
-    void toggleSettled(expenseId, share, next);
+    await reload();
+    return true;
+  }
+
+  async function markPayToAsPaid(debtorId: string, payerId: string, pin?: string): Promise<boolean> {
+    if (!supabase) return false;
+    const providedPin = pin?.trim() ?? "";
+    if (!providedPin) {
+      setConfirmPinError("Enter receiver PIN to continue.");
+      return false;
+    }
+
+    const actionKey = `${debtorId}:${payerId}`;
+    setIsMarkingPayTo(actionKey);
+    const { data, error: fnError } = await supabase.functions.invoke("confirm-carm-receipt", {
+      body: {
+        tripId,
+        debtorMemberId: debtorId,
+        payerMemberId: payerId,
+        pin: providedPin,
+      },
+    });
+
+    setIsMarkingPayTo(null);
+
+    if (fnError || (data as { error?: string } | null)?.error) {
+      setConfirmPinError((data as { error?: string } | null)?.error ?? fnError?.message ?? "Failed to verify PIN.");
+      return false;
+    }
+
+    await reload();
+    return true;
+  }
+
+  async function changeMemberPin(memberId: string, currentPin: string, newPin: string) {
+    if (!supabase) return false;
+
+    const { data, error: fnError } = await supabase.functions.invoke("update-member-pin", {
+      body: {
+        tripId,
+        memberId,
+        currentPin,
+        newPin,
+      },
+    });
+
+    if (fnError || (data as { error?: string } | null)?.error) {
+      setPinChangeError((data as { error?: string } | null)?.error ?? fnError?.message ?? "Failed to update PIN.");
+      return false;
+    }
+
+    return true;
+  }
+
+  async function handlePinChangeSubmit() {
+    if (!pinTargetMemberId) return;
+    if (!/^\d{4,8}$/.test(newPinInput)) {
+      setPinChangeError("New PIN must be 4 to 8 digits.");
+      return;
+    }
+    if (newPinInput !== confirmNewPinInput) {
+      setPinChangeError("New PIN and confirm PIN do not match.");
+      return;
+    }
+    setIsChangingPin(true);
+    setPinChangeError(null);
+    setPinChangeSuccess(null);
+    const success = await changeMemberPin(pinTargetMemberId, currentPinInput, newPinInput);
+    setIsChangingPin(false);
+    if (!success) return;
+    setPinChangeSuccess("PIN updated.");
+    setCurrentPinInput("");
+    setNewPinInput("");
+    setConfirmNewPinInput("");
   }
 
   if (!supabase || !tripId) {
@@ -711,22 +919,35 @@ export default function Home() {
                   .map((entry) => (
                     <article key={entry.member.id} className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
                       <div className="flex items-center justify-between">
-                        <p className="text-sm font-semibold">{entry.member.name}</p>
-                        <p
-                          className={`text-sm font-bold ${
-                            entry.openBalance > 0
-                              ? "text-emerald-300"
-                              : entry.openBalance < 0
-                                ? "text-rose-300"
-                                : "text-cyan-200"
-                          }`}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPinTargetMemberId(entry.member.id);
+                            setPinChangeError(null);
+                            setPinChangeSuccess(null);
+                            setCurrentPinInput("");
+                            setNewPinInput("");
+                            setConfirmNewPinInput("");
+                          }}
+                          className="text-sm font-semibold text-white underline decoration-dotted underline-offset-4"
                         >
-                          {entry.openBalance > 0
-                            ? `To receive ${formatAmount(Math.abs(entry.openBalance))}`
-                            : entry.openBalance < 0
-                              ? `To pay ${formatAmount(Math.abs(entry.openBalance))}`
-                              : "Balanced"}
-                        </p>
+                          {entry.member.name}
+                        </button>
+                        {entry.openBalance === 0 ? (
+                          <p className="text-sm font-bold text-cyan-200">Balanced</p>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setBalanceDetailsMemberId(entry.member.id)}
+                            className={`text-sm font-bold underline decoration-dotted underline-offset-4 ${
+                              entry.openBalance > 0 ? "text-emerald-300" : "text-rose-300"
+                            }`}
+                          >
+                            {entry.openBalance > 0
+                              ? `To receive ${formatAmount(Math.abs(entry.openBalance))}`
+                              : `To pay ${formatAmount(Math.abs(entry.openBalance))}`}
+                          </button>
+                        )}
                       </div>
                       <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-200">
                         <p className="rounded-lg border border-white/10 bg-white/5 px-2 py-1">
@@ -1153,9 +1374,32 @@ export default function Home() {
                           exit={{ opacity: 0, height: 0 }}
                           className="mt-3 space-y-2 overflow-hidden border-t border-white/10 pt-3"
                         >
-                          <p className="text-xs font-semibold uppercase tracking-wide text-cyan-100">
-                            To pay
-                          </p>
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-cyan-100">
+                              To pay
+                            </p>
+                            {unsettled > 0 ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  (() => {
+                                    setConfirmPin("");
+                                    setConfirmPinError(null);
+                                    setMarkAllPaidConfirm({
+                                      expenseId: expense.id,
+                                      title: expense.title,
+                                      count: unsettled,
+                                      payerMemberId: expense.paid_by_member_id,
+                                      payerName: membersById.get(expense.paid_by_member_id)?.name ?? "Receiver",
+                                    });
+                                  })()
+                                }
+                                className="rounded-lg border border-emerald-300/30 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-100"
+                              >
+                                Mark paid all
+                              </button>
+                            ) : null}
+                          </div>
                           {expense.receipt_url ? (
                             <button
                               type="button"
@@ -1240,6 +1484,455 @@ export default function Home() {
                   alt={receiptLightbox.alt}
                   className="max-h-[80vh] w-full object-contain"
                 />
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {selectedBalanceEntry && selectedBalanceDetails ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[72] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => setBalanceDetailsMemberId(null)}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 14, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold text-white">{selectedBalanceEntry.member.name}</p>
+                  <button
+                    type="button"
+                    onClick={() => setBalanceDetailsMemberId(null)}
+                    aria-label="Close balance details"
+                    className="rounded-full border border-white/20 bg-white/5 p-1 text-white"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                {selectedBalanceEntry.openBalance < 0 ? (
+                  <>
+                    <p className="mt-2 text-xs font-semibold text-rose-200">
+                      To pay {formatAmount(Math.abs(selectedBalanceEntry.openBalance))}
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {selectedBalanceDetails.payTo.length > 0 ? (
+                        selectedBalanceDetails.payTo.map((line) => (
+                          <div
+                            key={line.memberId}
+                            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-100"
+                          >
+                            <p className="flex items-center justify-between">
+                              <span>Pay to {membersById.get(line.memberId)?.name ?? "Member"}</span>
+                              <span className="font-semibold">{formatAmount(line.cents)}</span>
+                            </p>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
+                          No pending payments.
+                        </p>
+                      )}
+                    </div>
+                  </>
+                ) : selectedBalanceEntry.openBalance > 0 ? (
+                  <>
+                    <p className="mt-2 text-xs font-semibold text-emerald-200">
+                      To receive {formatAmount(Math.abs(selectedBalanceEntry.openBalance))}
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {selectedBalanceDetails.receiveFrom.length > 0 ? (
+                        selectedBalanceDetails.receiveFrom.map((line) => (
+                          <div
+                            key={line.memberId}
+                            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-100"
+                          >
+                            <p className="flex items-center justify-between">
+                              <span>Receive from {membersById.get(line.memberId)?.name ?? "Member"}</span>
+                              <span className="font-semibold">{formatAmount(line.cents)}</span>
+                            </p>
+                            <div className="mt-2 flex justify-end">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  (() => {
+                                    setConfirmPin("");
+                                    setConfirmPinError(null);
+                                    setMarkPayToConfirm({
+                                    debtorId: line.memberId,
+                                    payerId: selectedBalanceEntry.member.id,
+                                    debtorName: membersById.get(line.memberId)?.name ?? "Member",
+                                    payerName: selectedBalanceEntry.member.name,
+                                    cents: line.cents,
+                                  });
+                                })()
+                              }
+                                disabled={isMarkingPayTo === `${line.memberId}:${selectedBalanceEntry.member.id}`}
+                                className="rounded-lg border border-emerald-300/40 bg-emerald-500/20 px-2 py-1 text-[11px] font-semibold text-emerald-100 disabled:opacity-60"
+                              >
+                                {isMarkingPayTo === `${line.memberId}:${selectedBalanceEntry.member.id}`
+                                  ? "Marking..."
+                                  : "Mark received"}
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
+                          No pending collections.
+                        </p>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
+                    This member is currently balanced.
+                  </p>
+                )}
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {markAllPaidConfirm ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[74] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => {
+              setMarkAllPaidConfirm(null);
+              setConfirmPin("");
+              setConfirmPinError(null);
+            }}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 14, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <p className="text-sm font-bold text-white">Mark all as paid?</p>
+                <p className="mt-2 text-xs text-slate-300">
+                  This will settle {markAllPaidConfirm.count} pending payment
+                  {markAllPaidConfirm.count === 1 ? "" : "s"} in{" "}
+                  <span className="font-semibold text-slate-100">{markAllPaidConfirm.title}</span>.
+                </p>
+                <div className="mt-3">
+                  <label className="text-[11px] font-semibold text-cyan-100">{markAllPaidConfirm.payerName} PIN</label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={confirmPin}
+                    onChange={(event) => {
+                      setConfirmPin(event.target.value);
+                      if (confirmPinError) setConfirmPinError(null);
+                    }}
+                    placeholder="Enter PIN"
+                    className="mt-1 w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:border-cyan-300/60 focus:outline-none"
+                  />
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Required to confirm payment received by {markAllPaidConfirm.payerName}.
+                  </p>
+                </div>
+                {confirmPinError ? (
+                  <p className="mt-2 rounded-lg bg-rose-500/15 px-2 py-1 text-[11px] text-rose-100">{confirmPinError}</p>
+                ) : null}
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMarkAllPaidConfirm(null);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const current = markAllPaidConfirm;
+                      if (!current) return;
+                      const success = await markAllAsPaid(current.expenseId, confirmPin);
+                      if (!success) return;
+                      setMarkAllPaidConfirm(null);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl bg-emerald-400/90 px-3 py-2 text-xs font-semibold text-slate-950"
+                  >
+                    Confirm
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {markPayToConfirm ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[75] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => {
+              setMarkPayToConfirm(null);
+              setConfirmPin("");
+              setConfirmPinError(null);
+            }}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 14, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <p className="text-sm font-bold text-white">Confirm received payment?</p>
+                <p className="mt-2 text-xs text-slate-300">
+                  Confirm that <span className="font-semibold text-slate-100">{markPayToConfirm.payerName}</span> received{" "}
+                  <span className="font-semibold text-slate-100">{formatAmount(markPayToConfirm.cents)}</span> from{" "}
+                  <span className="font-semibold text-slate-100">{markPayToConfirm.debtorName}</span>.
+                </p>
+                <div className="mt-3">
+                  <label className="text-[11px] font-semibold text-cyan-100">{markPayToConfirm.payerName} PIN</label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={confirmPin}
+                    onChange={(event) => {
+                      setConfirmPin(event.target.value);
+                      if (confirmPinError) setConfirmPinError(null);
+                    }}
+                    placeholder="Enter PIN"
+                    className="mt-1 w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:border-cyan-300/60 focus:outline-none"
+                  />
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Required to confirm payment received by {markPayToConfirm.payerName}.
+                  </p>
+                </div>
+                {confirmPinError ? (
+                  <p className="mt-2 rounded-lg bg-rose-500/15 px-2 py-1 text-[11px] text-rose-100">{confirmPinError}</p>
+                ) : null}
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMarkPayToConfirm(null);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const current = markPayToConfirm;
+                      if (!current) return;
+                      const success = await markPayToAsPaid(
+                        current.debtorId,
+                        current.payerId,
+                        confirmPin,
+                      );
+                      if (!success) return;
+                      setMarkPayToConfirm(null);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl bg-emerald-400/90 px-3 py-2 text-xs font-semibold text-slate-950"
+                  >
+                    Confirm
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {sharePinConfirm ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[75] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => {
+              setSharePinConfirm(null);
+              setConfirmPin("");
+              setConfirmPinError(null);
+            }}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 14, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <p className="text-sm font-bold text-white">
+                  {sharePinConfirm.next ? "Mark as settled?" : "Mark as unsettled?"}
+                </p>
+                <p className="mt-2 text-xs text-slate-300">
+                  Enter <span className="font-semibold text-slate-100">{sharePinConfirm.receiverName}</span> PIN to
+                  confirm this checkbox update.
+                </p>
+                <div className="mt-3">
+                  <label className="text-[11px] font-semibold text-cyan-100">{sharePinConfirm.receiverName} PIN</label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={confirmPin}
+                    onChange={(event) => {
+                      setConfirmPin(event.target.value);
+                      if (confirmPinError) setConfirmPinError(null);
+                    }}
+                    placeholder="Enter PIN"
+                    className="mt-1 w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:border-cyan-300/60 focus:outline-none"
+                  />
+                </div>
+                {confirmPinError ? (
+                  <p className="mt-2 rounded-lg bg-rose-500/15 px-2 py-1 text-[11px] text-rose-100">{confirmPinError}</p>
+                ) : null}
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSharePinConfirm(null);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const current = sharePinConfirm;
+                      if (!current) return;
+                      const success = await toggleShareWithPin(current.expenseId, current.share, current.next, confirmPin);
+                      if (!success) return;
+                      setSharePinConfirm(null);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl bg-emerald-400/90 px-3 py-2 text-xs font-semibold text-slate-950"
+                  >
+                    Confirm
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {pinTargetMemberId ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[76] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => setPinTargetMemberId(null)}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 14, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <p className="text-sm font-bold text-white">Change PIN</p>
+                <p className="mt-1 text-xs text-slate-300">
+                  Member: {membersById.get(pinTargetMemberId)?.name ?? "Member"}
+                </p>
+                <div className="mt-3 space-y-2">
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={currentPinInput}
+                    onChange={(event) => {
+                      setCurrentPinInput(event.target.value);
+                      if (pinChangeError) setPinChangeError(null);
+                    }}
+                    placeholder="Current PIN"
+                    className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:border-cyan-300/60 focus:outline-none"
+                  />
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={newPinInput}
+                    onChange={(event) => {
+                      setNewPinInput(event.target.value);
+                      if (pinChangeError) setPinChangeError(null);
+                    }}
+                    placeholder="New PIN (4-8 digits)"
+                    className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:border-cyan-300/60 focus:outline-none"
+                  />
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={confirmNewPinInput}
+                    onChange={(event) => {
+                      setConfirmNewPinInput(event.target.value);
+                      if (pinChangeError) setPinChangeError(null);
+                    }}
+                    placeholder="Confirm new PIN"
+                    className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:border-cyan-300/60 focus:outline-none"
+                  />
+                </div>
+                {pinChangeError ? (
+                  <p className="mt-2 rounded-lg bg-rose-500/15 px-2 py-1 text-[11px] text-rose-100">{pinChangeError}</p>
+                ) : null}
+                {pinChangeSuccess ? (
+                  <p className="mt-2 rounded-lg bg-emerald-500/15 px-2 py-1 text-[11px] text-emerald-100">{pinChangeSuccess}</p>
+                ) : null}
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPinTargetMemberId(null)}
+                    className="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100"
+                  >
+                    Close
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isChangingPin}
+                    onClick={() => void handlePinChangeSubmit()}
+                    className="rounded-xl bg-cyan-400/90 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-60"
+                  >
+                    {isChangingPin ? "Saving..." : "Save PIN"}
+                  </button>
+                </div>
               </motion.div>
             </div>
           </motion.div>
