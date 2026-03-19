@@ -130,7 +130,12 @@ export default function Home() {
     try {
       const [tripRes, membersRes, expensesRes] = await Promise.all([
         supabase.from("trips").select("*").eq("id", tripId).maybeSingle<Trip>(),
-        supabase.from("members").select("*").eq("trip_id", tripId).order("created_at"),
+        supabase
+          .from("members")
+          .select("*")
+          .eq("trip_id", tripId)
+          .order("sort_order", { ascending: true, nullsFirst: false })
+          .order("created_at", { ascending: true }),
         supabase
           .from("expenses")
           .select("*")
@@ -207,6 +212,10 @@ export default function Home() {
     members.forEach((m) => map.set(m.id, m));
     return map;
   }, [members]);
+  const memberOrderById = useMemo(
+    () => new Map(members.map((member, index) => [member.id, index])),
+    [members],
+  );
 
   const summary = useMemo(() => {
     const totalSpent = expenses.reduce((sum, e) => sum + e.amount_cents, 0);
@@ -341,29 +350,29 @@ export default function Home() {
     const participantIds = members
       .filter((member) => form.participantIds.includes(member.id))
       .map((member) => member.id);
-    members
-      .filter((member) => participantIds.includes(member.id))
-      .forEach((member) => {
-        const base = amountToCents(customShares[member.id] ?? "");
-        if (base && base > 0) baseByMember[member.id] = base;
-      });
+    participantIds.forEach((memberId) => {
+      const base = amountToCents(customShares[memberId] ?? "");
+      if (base && base > 0) baseByMember[memberId] = base;
+    });
 
     const serviceByMember =
       form.category === "food" && serviceChargePreviewCents > 0
         ? splitEvenly(serviceChargePreviewCents, participantIds)
         : {};
 
-    return Object.entries(baseByMember).map(([memberId, baseCents]) => ({
+    return participantIds
+      .filter((memberId) => baseByMember[memberId] > 0)
+      .map((memberId) => ({
       memberName: membersById.get(memberId)?.name ?? "Member",
-      finalCents: baseCents + (serviceByMember[memberId] ?? 0),
+      finalCents: baseByMember[memberId] + (serviceByMember[memberId] ?? 0),
     }));
   }, [
     customShares,
     form.category,
     form.participantIds,
     form.splitMode,
-    members,
     membersById,
+    members,
     serviceChargePreviewCents,
   ]);
 
@@ -645,10 +654,14 @@ export default function Home() {
               exit={{ opacity: 0, y: -8 }}
               className="mt-4 rounded-3xl border border-white/10 bg-white/10 p-4 backdrop-blur-xl"
             >
-              <h2 className="text-sm font-semibold text-cyan-100">Net Position Per Person</h2>
+              <h2 className="text-sm font-semibold text-cyan-100">To Pay / To Receive</h2>
               <div className="mt-3 space-y-2">
                 {[...summary.ledger]
-                  .sort((a, b) => Math.abs(b.openBalance) - Math.abs(a.openBalance))
+                  .sort(
+                    (a, b) =>
+                      (memberOrderById.get(a.member.id) ?? Number.MAX_SAFE_INTEGER) -
+                      (memberOrderById.get(b.member.id) ?? Number.MAX_SAFE_INTEGER),
+                  )
                   .map((entry) => (
                     <article key={entry.member.id} className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
                       <div className="flex items-center justify-between">
@@ -708,7 +721,7 @@ export default function Home() {
                   <input
                     value={form.total}
                     onChange={(e) => setForm((current) => ({ ...current, total: e.target.value }))}
-                    placeholder="Total (incl. service)"
+                    placeholder={form.category === "food" ? "Total (incl. service)" : "Total"}
                     inputMode="decimal"
                     className="w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-300 focus:border-cyan-300/60 focus:outline-none"
                   />

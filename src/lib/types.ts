@@ -1,9 +1,10 @@
-﻿export type SplitMode = "equal" | "custom";
+export type SplitMode = "equal" | "custom";
 export type ExpenseCategory = "car" | "food" | "gas" | "activity" | "other";
 
 export type Trip = {
   id: string;
   name: string;
+  sort_order: number | null;
   created_at: string;
 };
 
@@ -11,6 +12,7 @@ export type Member = {
   id: string;
   trip_id: string;
   name: string;
+  sort_order: number | null;
   created_at: string;
 };
 
@@ -41,4 +43,5 @@ export type ExpenseShare = {
 export type ExpenseWithShares = Expense & {
   shares: ExpenseShare[];
 };
+
 
