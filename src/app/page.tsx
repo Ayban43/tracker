@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Activity,
@@ -117,6 +117,9 @@ export default function Home() {
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null);
   const [receiptLightbox, setReceiptLightbox] = useState<{ url: string; alt: string } | null>(null);
+  const [unsettleConfirm, setUnsettleConfirm] = useState<{ expenseId: string; share: ExpenseShare } | null>(null);
+  const [settleUndo, setSettleUndo] = useState<{ expenseId: string; share: ExpenseShare } | null>(null);
+  const settleUndoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -218,6 +221,15 @@ export default function Home() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [receiptLightbox]);
+
+  useEffect(
+    () => () => {
+      if (settleUndoTimerRef.current) {
+        clearTimeout(settleUndoTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const membersById = useMemo(() => {
     const map = new Map<string, Member>();
@@ -537,10 +549,6 @@ export default function Home() {
 
   async function toggleSettled(expenseId: string, share: ExpenseShare, next: boolean) {
     if (!supabase) return;
-    if (share.is_settled && !next) {
-      const confirmed = window.confirm("Mark this payment as unsettled?");
-      if (!confirmed) return;
-    }
 
     setExpenses((current) =>
       current.map((expense) =>
@@ -566,6 +574,28 @@ export default function Home() {
       setError(updateError.message);
       await reload();
     }
+  }
+
+  function onSettledChange(expenseId: string, share: ExpenseShare, next: boolean) {
+    if (share.is_settled && !next) {
+      setUnsettleConfirm({ expenseId, share });
+      return;
+    }
+
+    if (!share.is_settled && next) {
+      void toggleSettled(expenseId, share, true);
+      if (settleUndoTimerRef.current) {
+        clearTimeout(settleUndoTimerRef.current);
+      }
+      setSettleUndo({ expenseId, share });
+      settleUndoTimerRef.current = setTimeout(() => {
+        setSettleUndo(null);
+        settleUndoTimerRef.current = null;
+      }, 5000);
+      return;
+    }
+
+    void toggleSettled(expenseId, share, next);
   }
 
   if (!supabase || !tripId) {
@@ -1156,7 +1186,7 @@ export default function Home() {
                                     <input
                                       type="checkbox"
                                       checked={share.is_settled}
-                                      onChange={(e) => toggleSettled(expense.id, share, e.target.checked)}
+                                      onChange={(e) => onSettledChange(expense.id, share, e.target.checked)}
                                       className="h-4 w-4 rounded border-white/20 bg-white/10"
                                     />
                                   </span>
@@ -1206,6 +1236,86 @@ export default function Home() {
                   alt={receiptLightbox.alt}
                   className="max-h-[80vh] w-full object-contain"
                 />
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {settleUndo ? (
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            className="fixed inset-x-0 bottom-20 z-[76] mx-auto w-full max-w-md px-4"
+          >
+            <div className="flex items-center justify-between rounded-2xl border border-emerald-300/25 bg-emerald-500/15 px-3 py-2.5 backdrop-blur-xl">
+              <p className="text-xs font-semibold text-emerald-100">Payment marked as settled</p>
+              <button
+                type="button"
+                onClick={() => {
+                  const current = settleUndo;
+                  if (settleUndoTimerRef.current) {
+                    clearTimeout(settleUndoTimerRef.current);
+                    settleUndoTimerRef.current = null;
+                  }
+                  setSettleUndo(null);
+                  if (!current) return;
+                  void toggleSettled(current.expenseId, current.share, false);
+                }}
+                className="rounded-lg border border-emerald-200/50 bg-emerald-100/90 px-2.5 py-1 text-[11px] font-bold text-emerald-900"
+              >
+                Undo
+              </button>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {unsettleConfirm ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[75] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => setUnsettleConfirm(null)}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 16, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <p className="text-sm font-bold text-white">Mark as unsettled?</p>
+                <p className="mt-2 text-xs text-slate-300">
+                  This will move this payment back to pending.
+                </p>
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setUnsettleConfirm(null)}
+                    className="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100"
+                  >
+                    Keep settled
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const current = unsettleConfirm;
+                      setUnsettleConfirm(null);
+                      if (!current) return;
+                      void toggleSettled(current.expenseId, current.share, false);
+                    }}
+                    className="rounded-xl bg-rose-400/90 px-3 py-2 text-xs font-semibold text-slate-950"
+                  >
+                    Mark unsettled
+                  </button>
+                </div>
               </motion.div>
             </div>
           </motion.div>
