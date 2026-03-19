@@ -51,7 +51,7 @@ const initialForm: FormState = {
 const tabs: { id: Tab; label: string; icon: typeof Sparkles }[] = [
   { id: "overview", label: "Overview", icon: Sparkles },
   { id: "add", label: "Add", icon: Plus },
-  { id: "activity", label: "Activity", icon: Activity },
+  { id: "activity", label: "Payments", icon: Activity },
 ];
 
 const RECEIPT_BUCKET = "expense-receipts";
