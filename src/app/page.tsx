@@ -146,6 +146,13 @@ export default function Home() {
     next: boolean;
     receiverName: string;
   } | null>(null);
+  const [createExpensePinConfirm, setCreateExpensePinConfirm] = useState(false);
+  const [deleteExpensePinConfirm, setDeleteExpensePinConfirm] = useState<{
+    expenseId: string;
+    title: string;
+    payerName: string;
+  } | null>(null);
+  const [isDeletingExpense, setIsDeletingExpense] = useState(false);
   const [isMarkingPayTo, setIsMarkingPayTo] = useState<string | null>(null);
   const [confirmPin, setConfirmPin] = useState("");
   const [confirmPinError, setConfirmPinError] = useState<string | null>(null);
@@ -523,25 +530,47 @@ export default function Home() {
     setReceiptLightbox({ url, alt });
   }
 
-  async function createExpense(event: FormEvent<HTMLFormElement>) {
+  function createExpense(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!supabase || !tripId) return;
+    setConfirmPin("");
+    setConfirmPinError(null);
+    setCreateExpensePinConfirm(true);
+  }
+
+  async function createExpenseWithPin(pin: string): Promise<boolean> {
+    if (!supabase || !tripId) return false;
 
     const totalCents = amountToCents(form.total);
-    if (!totalCents) return setError("Enter a valid total amount.");
+    if (!totalCents) {
+      setError("Enter a valid total amount.");
+      return false;
+    }
 
     const hasServiceChargeInput = form.category === "food" && form.serviceCharge.trim().length > 0;
     const parsedServiceCharge = hasServiceChargeInput ? amountToCents(form.serviceCharge) : 0;
     if (hasServiceChargeInput && parsedServiceCharge === null) {
-      return setError("Enter a valid service charge amount.");
+      setError("Enter a valid service charge amount.");
+      return false;
     }
 
     const serviceChargeCents = parsedServiceCharge ?? 0;
     if (form.category === "food" && serviceChargeCents > totalCents) {
-      return setError("Service charge cannot be greater than total.");
+      setError("Service charge cannot be greater than total.");
+      return false;
     }
-    if (!form.paidByMemberId) return setError("Select who paid.");
-    if (form.participantIds.length === 0) return setError("Select at least one participant.");
+    if (!form.paidByMemberId) {
+      setError("Select who paid.");
+      return false;
+    }
+    if (form.participantIds.length === 0) {
+      setError("Select at least one participant.");
+      return false;
+    }
+    const providedPin = pin.trim();
+    if (!providedPin) {
+      setConfirmPinError("Enter payer PIN to save.");
+      return false;
+    }
 
     let sharesByMember: Record<string, number> = {};
 
@@ -561,7 +590,8 @@ export default function Home() {
       const expectedSubtotal =
         form.category === "food" ? totalCents - serviceChargeCents : totalCents;
       if (customTotal !== expectedSubtotal) {
-        return setError(`Custom split must equal ${formatAmount(expectedSubtotal)}.`);
+        setError(`Custom split must equal ${formatAmount(expectedSubtotal)}.`);
+        return false;
       }
 
       sharesByMember = { ...parsed };
@@ -595,34 +625,33 @@ export default function Home() {
         receiptUrl = publicUrlData.publicUrl;
       }
 
-      const { data, error: expenseError } = await supabase
-        .from("expenses")
-        .insert({
-          trip_id: tripId,
-          title: form.title || `${form.category.toUpperCase()} expense`,
-          category: form.category,
-          split_mode: form.splitMode,
-          amount_cents: totalCents,
-          receipt_url: receiptUrl,
-          paid_by_member_id: form.paidByMemberId,
-          occurred_on: form.occurredOn,
-          notes: form.notes || null,
-        })
-        .select("*")
-        .single();
-
-      if (expenseError) throw expenseError;
-
       const rows = Object.entries(sharesByMember).map(([memberId, owedCents]) => ({
-        expense_id: data.id,
         member_id: memberId,
         owed_cents: owedCents,
         is_settled: memberId === form.paidByMemberId || owedCents === 0,
         settled_at: memberId === form.paidByMemberId || owedCents === 0 ? new Date().toISOString() : null,
       }));
-
-      const { error: sharesError } = await supabase.from("expense_shares").insert(rows);
-      if (sharesError) throw sharesError;
+      const { data: createData, error: createError } = await supabase.functions.invoke("create-expense-with-pin", {
+        body: {
+          tripId,
+          pin: providedPin,
+          expense: {
+            title: form.title || `${form.category.toUpperCase()} expense`,
+            category: form.category,
+            splitMode: form.splitMode,
+            amountCents: totalCents,
+            receiptUrl,
+            paidByMemberId: form.paidByMemberId,
+            occurredOn: form.occurredOn,
+            notes: form.notes || null,
+          },
+          shares: rows,
+        },
+      });
+      if (createError || (createData as { error?: string } | null)?.error) {
+        setConfirmPinError((createData as { error?: string } | null)?.error ?? createError?.message ?? "Failed to save expense.");
+        return false;
+      }
 
       setForm((current) => ({
         ...initialForm,
@@ -636,8 +665,10 @@ export default function Home() {
       setReceiptPreviewUrl(null);
       setActiveTab("activity");
       await reload();
+      return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create expense.");
+      return false;
     } finally {
       setIsSaving(false);
     }
@@ -670,6 +701,34 @@ export default function Home() {
       setError(updateError.message);
       await reload();
     }
+  }
+
+  async function deleteExpenseWithPin(expenseId: string, pin: string): Promise<boolean> {
+    if (!supabase || !tripId) return false;
+    const providedPin = pin.trim();
+    if (!providedPin) {
+      setConfirmPinError("Enter payer PIN to delete this expense.");
+      return false;
+    }
+
+    setIsDeletingExpense(true);
+    const { data, error: fnError } = await supabase.functions.invoke("delete-expense-with-pin", {
+      body: {
+        tripId,
+        expenseId,
+        pin: providedPin,
+      },
+    });
+    setIsDeletingExpense(false);
+
+    if (fnError || (data as { error?: string } | null)?.error) {
+      setConfirmPinError((data as { error?: string } | null)?.error ?? fnError?.message ?? "Failed to delete expense.");
+      return false;
+    }
+
+    setExpanded((current) => current.filter((id) => id !== expenseId));
+    await reload();
+    return true;
   }
 
   async function toggleShareWithPin(expenseId: string, share: ExpenseShare, next: boolean, pin: string): Promise<boolean> {
@@ -1378,27 +1437,44 @@ export default function Home() {
                             <p className="text-xs font-semibold uppercase tracking-wide text-cyan-100">
                               To pay
                             </p>
-                            {unsettled > 0 ? (
+                            <div className="flex items-center gap-2">
+                              {unsettled > 0 ? (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    (() => {
+                                      setConfirmPin("");
+                                      setConfirmPinError(null);
+                                      setMarkAllPaidConfirm({
+                                        expenseId: expense.id,
+                                        title: expense.title,
+                                        count: unsettled,
+                                        payerMemberId: expense.paid_by_member_id,
+                                        payerName: membersById.get(expense.paid_by_member_id)?.name ?? "Receiver",
+                                      });
+                                    })()
+                                  }
+                                  className="rounded-lg border border-emerald-300/30 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-100"
+                                >
+                                  Mark paid all
+                                </button>
+                              ) : null}
                               <button
                                 type="button"
-                                onClick={() =>
-                                  (() => {
-                                    setConfirmPin("");
-                                    setConfirmPinError(null);
-                                    setMarkAllPaidConfirm({
-                                      expenseId: expense.id,
-                                      title: expense.title,
-                                      count: unsettled,
-                                      payerMemberId: expense.paid_by_member_id,
-                                      payerName: membersById.get(expense.paid_by_member_id)?.name ?? "Receiver",
-                                    });
-                                  })()
-                                }
-                                className="rounded-lg border border-emerald-300/30 bg-emerald-500/15 px-2 py-1 text-[11px] font-semibold text-emerald-100"
+                                onClick={() => {
+                                  setConfirmPin("");
+                                  setConfirmPinError(null);
+                                  setDeleteExpensePinConfirm({
+                                    expenseId: expense.id,
+                                    title: expense.title,
+                                    payerName: membersById.get(expense.paid_by_member_id)?.name ?? "Payer",
+                                  });
+                                }}
+                                className="rounded-lg border border-rose-300/30 bg-rose-500/15 px-2 py-1 text-[11px] font-semibold text-rose-100"
                               >
-                                Mark paid all
+                                Delete
                               </button>
-                            ) : null}
+                            </div>
                           </div>
                           {expense.receipt_url ? (
                             <button
@@ -1599,6 +1675,165 @@ export default function Home() {
                     This member is currently balanced.
                   </p>
                 )}
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {createExpensePinConfirm ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[73] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => {
+              if (isSaving) return;
+              setCreateExpensePinConfirm(false);
+              setConfirmPin("");
+              setConfirmPinError(null);
+            }}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 14, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <p className="text-sm font-bold text-white">Confirm expense save</p>
+                <p className="mt-2 text-xs text-slate-300">
+                  Enter <span className="font-semibold text-slate-100">{membersById.get(form.paidByMemberId)?.name ?? "Payer"}</span> PIN to save this expense.
+                </p>
+                <div className="mt-3">
+                  <label className="text-[11px] font-semibold text-cyan-100">Payer PIN</label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={confirmPin}
+                    onChange={(event) => {
+                      setConfirmPin(event.target.value);
+                      if (confirmPinError) setConfirmPinError(null);
+                    }}
+                    placeholder="Enter PIN"
+                    className="mt-1 w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:border-cyan-300/60 focus:outline-none"
+                  />
+                </div>
+                {confirmPinError ? (
+                  <p className="mt-2 rounded-lg bg-rose-500/15 px-2 py-1 text-[11px] text-rose-100">{confirmPinError}</p>
+                ) : null}
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={isSaving}
+                    onClick={() => {
+                      setCreateExpensePinConfirm(false);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSaving}
+                    onClick={async () => {
+                      const success = await createExpenseWithPin(confirmPin);
+                      if (!success) return;
+                      setCreateExpensePinConfirm(false);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl bg-cyan-400/90 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-60"
+                  >
+                    {isSaving ? "Saving..." : "Confirm"}
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {deleteExpensePinConfirm ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[74] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => {
+              if (isDeletingExpense) return;
+              setDeleteExpensePinConfirm(null);
+              setConfirmPin("");
+              setConfirmPinError(null);
+            }}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 14, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <p className="text-sm font-bold text-white">Delete expense?</p>
+                <p className="mt-2 text-xs text-slate-300">
+                  This will permanently remove <span className="font-semibold text-slate-100">{deleteExpensePinConfirm.title}</span>. Enter{" "}
+                  <span className="font-semibold text-slate-100">{deleteExpensePinConfirm.payerName}</span> PIN to confirm.
+                </p>
+                <div className="mt-3">
+                  <label className="text-[11px] font-semibold text-cyan-100">Payer PIN</label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={confirmPin}
+                    onChange={(event) => {
+                      setConfirmPin(event.target.value);
+                      if (confirmPinError) setConfirmPinError(null);
+                    }}
+                    placeholder="Enter PIN"
+                    className="mt-1 w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-slate-400 focus:border-cyan-300/60 focus:outline-none"
+                  />
+                </div>
+                {confirmPinError ? (
+                  <p className="mt-2 rounded-lg bg-rose-500/15 px-2 py-1 text-[11px] text-rose-100">{confirmPinError}</p>
+                ) : null}
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={isDeletingExpense}
+                    onClick={() => {
+                      setDeleteExpensePinConfirm(null);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-100 disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeletingExpense}
+                    onClick={async () => {
+                      const current = deleteExpensePinConfirm;
+                      if (!current) return;
+                      const success = await deleteExpenseWithPin(current.expenseId, confirmPin);
+                      if (!success) return;
+                      setDeleteExpensePinConfirm(null);
+                      setConfirmPin("");
+                      setConfirmPinError(null);
+                    }}
+                    className="rounded-xl bg-rose-400/90 px-3 py-2 text-xs font-semibold text-slate-950 disabled:opacity-60"
+                  >
+                    {isDeletingExpense ? "Deleting..." : "Delete"}
+                  </button>
+                </div>
               </motion.div>
             </div>
           </motion.div>
