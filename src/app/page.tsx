@@ -9,6 +9,7 @@ import {
   ChevronUp,
   CircleDollarSign,
   Fuel,
+  Maximize2,
   Plus,
   Receipt,
   Sparkles,
@@ -16,6 +17,7 @@ import {
   UtensilsCrossed,
   Wallet,
   Waves,
+  X,
 } from "lucide-react";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 import type { ExpenseShare, ExpenseWithShares, Member, Trip } from "@/lib/types";
@@ -114,6 +116,7 @@ export default function Home() {
   const [sortBy, setSortBy] = useState<"date_desc" | "date_asc" | "amount_desc" | "amount_asc" | "title_asc">("date_desc");
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null);
+  const [receiptLightbox, setReceiptLightbox] = useState<{ url: string; alt: string } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -206,6 +209,15 @@ export default function Home() {
       }
     };
   }, [receiptPreviewUrl]);
+
+  useEffect(() => {
+    if (!receiptLightbox) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setReceiptLightbox(null);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [receiptLightbox]);
 
   const membersById = useMemo(() => {
     const map = new Map<string, Member>();
@@ -397,6 +409,10 @@ export default function Home() {
 
     setReceiptFile(file);
     setReceiptPreviewUrl(file ? URL.createObjectURL(file) : null);
+  }
+
+  function openReceiptLightbox(url: string, alt = "Receipt photo") {
+    setReceiptLightbox({ url, alt });
   }
 
   async function createExpense(event: FormEvent<HTMLFormElement>) {
@@ -898,11 +914,21 @@ export default function Home() {
                     className="mt-2 block w-full text-xs text-slate-200 file:mr-3 file:rounded-lg file:border-0 file:bg-cyan-400 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-slate-900"
                   />
                   {receiptPreviewUrl ? (
-                    <img
-                      src={receiptPreviewUrl}
-                      alt="Receipt preview"
-                      className="mt-2 h-28 w-full rounded-lg object-cover"
-                    />
+                    <button
+                      type="button"
+                      onClick={() => openReceiptLightbox(receiptPreviewUrl, "Receipt preview")}
+                      className="group relative mt-2 block w-full overflow-hidden rounded-lg border border-white/20"
+                    >
+                      <img
+                        src={receiptPreviewUrl}
+                        alt="Receipt preview"
+                        className="h-28 w-full object-cover transition duration-200 group-active:scale-[0.98] group-hover:scale-[1.02]"
+                      />
+                      <span className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-gradient-to-t from-black/60 to-transparent px-2 py-2 text-[11px] font-semibold text-cyan-100">
+                        <Maximize2 className="h-3.5 w-3.5" />
+                        Tap to zoom
+                      </span>
+                    </button>
                   ) : null}
                 </div>
 
@@ -1060,15 +1086,16 @@ export default function Home() {
                           <p className="text-base font-bold">{expense.title}</p>
                           <p className="mt-1 text-xs text-slate-300">{expense.category.toUpperCase()} | Paid by {payer}</p>
                           {expense.receipt_url ? (
-                            <a
-                              href={expense.receipt_url}
-                              target="_blank"
-                              rel="noreferrer"
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openReceiptLightbox(expense.receipt_url ?? "", `${expense.title} receipt`);
+                              }}
                               className="mt-1 inline-block text-[11px] font-semibold text-cyan-200 underline underline-offset-2"
-                              onClick={(event) => event.stopPropagation()}
                             >
                               View receipt
-                            </a>
+                            </button>
                           ) : null}
                         </div>
                         <div className="text-right">
@@ -1096,11 +1123,21 @@ export default function Home() {
                             To pay
                           </p>
                           {expense.receipt_url ? (
-                            <img
-                              src={expense.receipt_url}
-                              alt="Expense receipt"
-                              className="h-36 w-full rounded-xl object-cover"
-                            />
+                            <button
+                              type="button"
+                              onClick={() => openReceiptLightbox(expense.receipt_url ?? "", `${expense.title} receipt`)}
+                              className="group relative block w-full overflow-hidden rounded-xl border border-white/10"
+                            >
+                              <img
+                                src={expense.receipt_url}
+                                alt="Expense receipt"
+                                className="h-36 w-full object-cover transition duration-200 group-active:scale-[0.98] group-hover:scale-[1.02]"
+                              />
+                              <span className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-gradient-to-t from-black/60 to-transparent px-2 py-2 text-[11px] font-semibold text-cyan-100">
+                                <Maximize2 className="h-3.5 w-3.5" />
+                                Tap to zoom
+                              </span>
+                            </button>
                           ) : null}
                           {expense.shares.map((share) => {
                             const member = membersById.get(share.member_id)?.name ?? "Member";
@@ -1137,6 +1174,43 @@ export default function Home() {
           ) : null}
         </AnimatePresence>
       </div>
+
+      <AnimatePresence>
+        {receiptLightbox ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[70] bg-slate-950/85 backdrop-blur-md"
+            onClick={() => setReceiptLightbox(null)}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9, y: 16 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 8 }}
+                transition={{ type: "spring", stiffness: 220, damping: 22 }}
+                className="relative w-full max-w-md overflow-hidden rounded-2xl border border-cyan-300/25 bg-slate-900/80 shadow-2xl shadow-cyan-950/40"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  aria-label="Close receipt preview"
+                  onClick={() => setReceiptLightbox(null)}
+                  className="absolute right-2 top-2 z-10 rounded-full border border-white/20 bg-black/50 p-1.5 text-white"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+                <img
+                  src={receiptLightbox.url}
+                  alt={receiptLightbox.alt}
+                  className="max-h-[80vh] w-full object-contain"
+                />
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
 
       {activeTab !== "add" ? (
         <div className="pointer-events-none fixed inset-x-0 bottom-4 z-40 mx-auto flex w-full max-w-md justify-end px-6">
