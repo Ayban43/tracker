@@ -153,6 +153,7 @@ export default function Home() {
     payerName: string;
   } | null>(null);
   const [isDeletingExpense, setIsDeletingExpense] = useState(false);
+  const [shareBreakdownMemberId, setShareBreakdownMemberId] = useState<string | null>(null);
   const [isMarkingPayTo, setIsMarkingPayTo] = useState<string | null>(null);
   const [confirmPin, setConfirmPin] = useState("");
   const [confirmPinError, setConfirmPinError] = useState<string | null>(null);
@@ -401,6 +402,54 @@ export default function Home() {
   const selectedBalanceDetails = useMemo(
     () => (balanceDetailsMemberId ? balanceDetailsByMemberId.get(balanceDetailsMemberId) ?? null : null),
     [balanceDetailsByMemberId, balanceDetailsMemberId],
+  );
+  const shareBreakdownByMemberId = useMemo(() => {
+    const result = new Map<
+      string,
+      Array<{
+        expenseId: string;
+        title: string;
+        category: ExpenseWithShares["category"];
+        occurredOn: string;
+        payerName: string;
+        owedCents: number;
+        isSettled: boolean;
+      }>
+    >();
+
+    members.forEach((member) => result.set(member.id, []));
+
+    expenses.forEach((expense) => {
+      const payerName = membersById.get(expense.paid_by_member_id)?.name ?? "Member";
+      expense.shares.forEach((share) => {
+        const list = result.get(share.member_id);
+        if (!list) return;
+        list.push({
+          expenseId: expense.id,
+          title: expense.title,
+          category: expense.category,
+          occurredOn: expense.occurred_on,
+          payerName,
+          owedCents: share.owed_cents,
+          isSettled: share.is_settled,
+        });
+      });
+    });
+
+    result.forEach((items, memberId) => {
+      items.sort((a, b) => {
+        const dateDiff = new Date(b.occurredOn).getTime() - new Date(a.occurredOn).getTime();
+        if (dateDiff !== 0) return dateDiff;
+        return a.expenseId.localeCompare(b.expenseId);
+      });
+      result.set(memberId, items);
+    });
+
+    return result;
+  }, [expenses, members, membersById]);
+  const selectedShareBreakdownItems = useMemo(
+    () => (shareBreakdownMemberId ? shareBreakdownByMemberId.get(shareBreakdownMemberId) ?? [] : []),
+    [shareBreakdownByMemberId, shareBreakdownMemberId],
   );
 
   const filteredExpenses = useMemo(() => {
@@ -1009,9 +1058,14 @@ export default function Home() {
                         )}
                       </div>
                       <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-200">
-                        <p className="rounded-lg border border-white/10 bg-white/5 px-2 py-1">
-                          My total share: <span className="font-semibold text-white">{formatAmount(entry.owed)}</span>
-                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setShareBreakdownMemberId(entry.member.id)}
+                          className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-left"
+                        >
+                          My total share:{" "}
+                          <span className="font-semibold text-white">{formatAmount(entry.owed)}</span>
+                        </button>
                         <p className="rounded-lg border border-white/10 bg-white/5 px-2 py-1">
                           Already paid share:{" "}
                           <span className="font-semibold text-white">{formatAmount(entry.settledShare)}</span>
@@ -1675,6 +1729,74 @@ export default function Home() {
                     This member is currently balanced.
                   </p>
                 )}
+              </motion.div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {shareBreakdownMemberId ? (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[73] bg-slate-950/80 backdrop-blur-sm"
+            onClick={() => setShareBreakdownMemberId(null)}
+          >
+            <div className="flex min-h-screen items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, y: 14, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                transition={{ type: "spring", stiffness: 240, damping: 22 }}
+                className="w-full max-w-sm rounded-2xl border border-white/15 bg-[#1a2032] p-4 shadow-2xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold text-white">
+                    {membersById.get(shareBreakdownMemberId)?.name ?? "Member"} share breakdown
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setShareBreakdownMemberId(null)}
+                    aria-label="Close share breakdown"
+                    className="rounded-full border border-white/20 bg-white/5 p-1 text-white"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-cyan-100">
+                  Total:{" "}
+                  <span className="font-semibold text-white">
+                    {formatAmount(
+                      selectedShareBreakdownItems.reduce((sum, item) => sum + item.owedCents, 0),
+                    )}
+                  </span>
+                </p>
+                <div className="mt-3 max-h-[55vh] space-y-2 overflow-y-auto pr-1">
+                  {selectedShareBreakdownItems.length > 0 ? (
+                    selectedShareBreakdownItems.map((item) => (
+                      <div key={`${item.expenseId}-${item.occurredOn}`} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+                        <p className="text-xs font-semibold text-slate-100">{item.title}</p>
+                        <p className="mt-0.5 text-[11px] text-slate-300">
+                          {item.category.toUpperCase()} | {item.occurredOn} | Paid by {item.payerName}
+                        </p>
+                        <p className="mt-1 flex items-center justify-between text-xs">
+                          <span className="text-slate-300">Your share</span>
+                          <span className="font-semibold text-white">{formatAmount(item.owedCents)}</span>
+                        </p>
+                        <p className={`mt-0.5 text-[11px] font-semibold ${item.isSettled ? "text-emerald-300" : "text-amber-300"}`}>
+                          {item.isSettled ? "Settled" : "Unsettled"}
+                        </p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-slate-300">
+                      No shares yet.
+                    </p>
+                  )}
+                </div>
               </motion.div>
             </div>
           </motion.div>
