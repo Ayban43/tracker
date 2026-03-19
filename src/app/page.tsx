@@ -101,7 +101,7 @@ export default function Home() {
     }
   }, []);
 
-  const [trip, setTrip] = useState<Trip | null>(null);
+  const [, setTrip] = useState<Trip | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [expenses, setExpenses] = useState<ExpenseWithShares[]>([]);
   const [form, setForm] = useState<FormState>(initialForm);
@@ -216,10 +216,6 @@ export default function Home() {
     );
 
     const ledger = members.map((m) => {
-      const paid = expenses
-        .filter((e) => e.paid_by_member_id === m.id)
-        .reduce((sum, e) => sum + e.amount_cents, 0);
-
       const owed = expenses.reduce((sum, e) => {
         const share = e.shares.find((s) => s.member_id === m.id);
         return sum + (share?.owed_cents ?? 0);
@@ -229,6 +225,7 @@ export default function Home() {
         const share = e.shares.find((s) => s.member_id === m.id && !s.is_settled);
         return sum + (share?.owed_cents ?? 0);
       }, 0);
+      const settledShare = owed - unsettledShare;
 
       const creditOutstanding = expenses.reduce((sum, e) => {
         if (e.paid_by_member_id !== m.id) return sum;
@@ -257,8 +254,8 @@ export default function Home() {
 
       return {
         member: m,
-        paid,
         owed,
+        settledShare,
         unsettledShare,
         openBalance: creditOutstanding - debitOutstanding,
       };
@@ -574,7 +571,6 @@ export default function Home() {
         >
           <div>
             <p className="text-[11px] uppercase tracking-[0.2em] text-cyan-200/80">Trip wallet</p>
-            <h1 className="mt-1 text-2xl font-bold">{trip?.name ?? "Trip Tracker"}</h1>
           </div>
 
           <div className="mt-4 grid grid-cols-2 gap-2">
@@ -649,7 +645,7 @@ export default function Home() {
               exit={{ opacity: 0, y: -8 }}
               className="mt-4 rounded-3xl border border-white/10 bg-white/10 p-4 backdrop-blur-xl"
             >
-              <h2 className="text-sm font-semibold text-cyan-100">Who Owes / Gets Back</h2>
+              <h2 className="text-sm font-semibold text-cyan-100">Net Position Per Person</h2>
               <div className="mt-3 space-y-2">
                 {[...summary.ledger]
                   .sort((a, b) => Math.abs(b.openBalance) - Math.abs(a.openBalance))
@@ -667,14 +663,23 @@ export default function Home() {
                           }`}
                         >
                           {entry.openBalance > 0
-                            ? `Gets ${formatAmount(Math.abs(entry.openBalance))}`
+                            ? `To receive ${formatAmount(Math.abs(entry.openBalance))}`
                             : entry.openBalance < 0
-                              ? `Owes ${formatAmount(Math.abs(entry.openBalance))}`
-                              : "Settled"}
+                              ? `To pay ${formatAmount(Math.abs(entry.openBalance))}`
+                              : "Balanced"}
                         </p>
                       </div>
-                      <p className="mt-1 text-xs text-slate-300">
-                        Paid {formatAmount(entry.paid)} | Unsettled share {formatAmount(entry.unsettledShare)}
+                      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-slate-200">
+                        <p className="rounded-lg border border-white/10 bg-white/5 px-2 py-1">
+                          My total share: <span className="font-semibold text-white">{formatAmount(entry.owed)}</span>
+                        </p>
+                        <p className="rounded-lg border border-white/10 bg-white/5 px-2 py-1">
+                          Already paid share:{" "}
+                          <span className="font-semibold text-white">{formatAmount(entry.settledShare)}</span>
+                        </p>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-300">
+                        Left to pay {formatAmount(entry.unsettledShare)}
                       </p>
                     </article>
                   ))}
@@ -726,7 +731,7 @@ export default function Home() {
                 ) : null}
 
                 <div className="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                  {(["car", "food", "gas", "activity", "other"] as const).map((category) => (
+                  {(["food", "gas", "activity", "other"] as const).map((category) => (
                     <button
                       key={category}
                       type="button"
