@@ -795,31 +795,35 @@ export default function Home() {
                       key={category}
                       type="button"
                       onClick={() => setForm((current) => ({ ...current, category }))}
-                      className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold capitalize ${
+                      className={`inline-flex shrink-0 items-center justify-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold capitalize leading-none ${
                         form.category === category
                           ? "bg-white text-slate-900"
                           : "bg-white/10 text-slate-100"
                       }`}
                     >
-                      <span className="inline-flex items-center gap-1">
-                        {categoryIcon(category)}
-                        {category}
-                      </span>
+                      {categoryIcon(category)}
+                      <span className="pt-px">{category}</span>
                     </button>
                   ))}
                 </div>
 
-                <select
-                  value={form.paidByMemberId}
-                  onChange={(e) => setForm((current) => ({ ...current, paidByMemberId: e.target.value }))}
-                  className="w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white focus:border-cyan-300/60 focus:outline-none"
-                >
-                  {members.map((member) => (
-                    <option key={member.id} value={member.id} className="text-slate-900">
-                      {member.name}
-                    </option>
-                  ))}
-                </select>
+                <label className="block">
+                  <span className="text-xs font-semibold text-cyan-100">Who paid this expense?</span>
+                  <span className="mt-0.5 block text-[11px] text-slate-300">
+                    Select the person who paid at the counter.
+                  </span>
+                  <select
+                    value={form.paidByMemberId}
+                    onChange={(e) => setForm((current) => ({ ...current, paidByMemberId: e.target.value }))}
+                    className="mt-2 w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-sm text-white focus:border-cyan-300/60 focus:outline-none"
+                  >
+                    {members.map((member) => (
+                      <option key={member.id} value={member.id} className="text-slate-900">
+                        {member.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
 
                 <div className="flex gap-2">
                   {(["equal", "custom"] as const).map((mode) => (
@@ -838,7 +842,7 @@ export default function Home() {
                   ))}
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {members.map((member) => {
                     const selected = form.participantIds.includes(member.id);
                     return (
@@ -846,7 +850,7 @@ export default function Home() {
                         key={member.id}
                         type="button"
                         onClick={() => toggleParticipant(member.id)}
-                        className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                        className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
                           selected
                             ? "bg-blue-500 text-white"
                             : "bg-white/10 text-slate-100"
