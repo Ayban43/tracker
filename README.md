@@ -1,36 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+﻿# Trip Expense Tracker
 
-## Getting Started
+Mobile-first Next.js + Supabase app to track shared travel expenses for a small group.
 
-First, run the development server:
+## Features
+
+- Add expenses for car, food, and other categories
+- Split equally or custom by person (useful when only some people ate)
+- Track who paid each expense
+- Mark each person's share as paid/unpaid
+- Live balance summary (who owes vs who should get back)
+
+## 1) Supabase setup
+
+1. Create a Supabase project.
+2. Open SQL Editor and run [`supabase/schema.sql`](./supabase/schema.sql).
+3. Copy your project URL and anon key.
+
+The seed script creates one trip with this id:
+
+- `8a5eb18a-bda9-4cf9-99a8-08e18f5f6798`
+
+## 2) Environment variables
+
+Copy `.env.example` to `.env.local` and fill values:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.example .env.local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Required:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_TRIP_ID`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 3) Run locally
 
-## Learn More
+```bash
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open [http://localhost:3000](http://localhost:3000).
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 4) Deploy to Vercel
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. Push this repo to GitHub/GitLab/Bitbucket.
+2. Import the repo into Vercel.
+3. Add the same 3 environment variables in Vercel project settings.
+4. Deploy.
 
-## Deploy on Vercel
+## Notes
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- Current SQL policies are open (`using (true)`) for quick private-group usage.
+- Before public use, add Supabase Auth and tighten RLS policies per user/trip.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
