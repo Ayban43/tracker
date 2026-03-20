@@ -93,6 +93,14 @@ function categoryIcon(category: "car" | "food" | "gas" | "activity" | "other") {
   return <Receipt className="h-4 w-4" />;
 }
 
+function categoryLabel(category: "car" | "food" | "gas" | "activity" | "other") {
+  if (category === "gas") return "Transpo";
+  if (category === "food") return "Food";
+  if (category === "activity") return "Activity";
+  if (category === "other") return "Other";
+  return "Car";
+}
+
 export default function Home() {
   const tripId = process.env.NEXT_PUBLIC_TRIP_ID ?? "";
   const supabase = useMemo(() => {
@@ -340,7 +348,21 @@ export default function Home() {
   }, [expenses, members]);
 
   const balanceDetailsByMemberId = useMemo(() => {
-    const result = new Map<string, { payTo: Array<{ memberId: string; cents: number }>; receiveFrom: Array<{ memberId: string; cents: number }> }>();
+    const result = new Map<
+      string,
+      {
+        payTo: Array<{
+          memberId: string;
+          cents: number;
+          items: Array<{ expenseId: string; title: string; category: ExpenseWithShares["category"]; occurredOn: string; cents: number }>;
+        }>;
+        receiveFrom: Array<{
+          memberId: string;
+          cents: number;
+          items: Array<{ expenseId: string; title: string; category: ExpenseWithShares["category"]; occurredOn: string; cents: number }>;
+        }>;
+      }
+    >();
 
     members.forEach((member) => {
       result.set(member.id, { payTo: [], receiveFrom: [] });
@@ -348,9 +370,19 @@ export default function Home() {
 
     const payToMapByMember = new Map<string, Map<string, number>>();
     const receiveFromMapByMember = new Map<string, Map<string, number>>();
+    const payToItemsMapByMember = new Map<
+      string,
+      Map<string, Array<{ expenseId: string; title: string; category: ExpenseWithShares["category"]; occurredOn: string; cents: number }>>
+    >();
+    const receiveFromItemsMapByMember = new Map<
+      string,
+      Map<string, Array<{ expenseId: string; title: string; category: ExpenseWithShares["category"]; occurredOn: string; cents: number }>>
+    >();
     members.forEach((member) => {
       payToMapByMember.set(member.id, new Map());
       receiveFromMapByMember.set(member.id, new Map());
+      payToItemsMapByMember.set(member.id, new Map());
+      receiveFromItemsMapByMember.set(member.id, new Map());
     });
 
     expenses.forEach((expense) => {
@@ -365,17 +397,47 @@ export default function Home() {
         if (debtorPayMap) {
           debtorPayMap.set(payerId, (debtorPayMap.get(payerId) ?? 0) + share.owed_cents);
         }
+        const debtorPayItemsMap = payToItemsMapByMember.get(debtorId);
+        if (debtorPayItemsMap) {
+          const list = debtorPayItemsMap.get(payerId) ?? [];
+          list.push({
+            expenseId: expense.id,
+            title: expense.title,
+            category: expense.category,
+            occurredOn: expense.occurred_on,
+            cents: share.owed_cents,
+          });
+          debtorPayItemsMap.set(payerId, list);
+        }
 
         const payerReceiveMap = receiveFromMapByMember.get(payerId);
         if (payerReceiveMap) {
           payerReceiveMap.set(debtorId, (payerReceiveMap.get(debtorId) ?? 0) + share.owed_cents);
+        }
+        const payerReceiveItemsMap = receiveFromItemsMapByMember.get(payerId);
+        if (payerReceiveItemsMap) {
+          const list = payerReceiveItemsMap.get(debtorId) ?? [];
+          list.push({
+            expenseId: expense.id,
+            title: expense.title,
+            category: expense.category,
+            occurredOn: expense.occurred_on,
+            cents: share.owed_cents,
+          });
+          payerReceiveItemsMap.set(debtorId, list);
         }
       });
     });
 
     members.forEach((member) => {
       const payTo = [...(payToMapByMember.get(member.id)?.entries() ?? [])]
-        .map(([memberId, cents]) => ({ memberId, cents }))
+        .map(([memberId, cents]) => ({
+          memberId,
+          cents,
+          items: [...(payToItemsMapByMember.get(member.id)?.get(memberId) ?? [])].sort(
+            (a, b) => new Date(b.occurredOn).getTime() - new Date(a.occurredOn).getTime(),
+          ),
+        }))
         .sort(
           (a, b) =>
             (memberOrderById.get(a.memberId) ?? Number.MAX_SAFE_INTEGER) -
@@ -383,7 +445,13 @@ export default function Home() {
         );
 
       const receiveFrom = [...(receiveFromMapByMember.get(member.id)?.entries() ?? [])]
-        .map(([memberId, cents]) => ({ memberId, cents }))
+        .map(([memberId, cents]) => ({
+          memberId,
+          cents,
+          items: [...(receiveFromItemsMapByMember.get(member.id)?.get(memberId) ?? [])].sort(
+            (a, b) => new Date(b.occurredOn).getTime() - new Date(a.occurredOn).getTime(),
+          ),
+        }))
         .sort(
           (a, b) =>
             (memberOrderById.get(a.memberId) ?? Number.MAX_SAFE_INTEGER) -
@@ -685,7 +753,7 @@ export default function Home() {
           tripId,
           pin: providedPin,
           expense: {
-            title: form.title || `${form.category.toUpperCase()} expense`,
+            title: form.title || `${categoryLabel(form.category).toUpperCase()} expense`,
             category: form.category,
             splitMode: form.splitMode,
             amountCents: totalCents,
@@ -1061,10 +1129,11 @@ export default function Home() {
                         <button
                           type="button"
                           onClick={() => setShareBreakdownMemberId(entry.member.id)}
-                          className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-left"
+                          className="rounded-lg border border-cyan-300/35 bg-cyan-500/10 px-2 py-1 text-left"
                         >
-                          My total share:{" "}
-                          <span className="font-semibold text-white">{formatAmount(entry.owed)}</span>
+                          <span className="block text-[10px] uppercase tracking-wide text-cyan-200">My total share</span>
+                          <span className="mt-0.5 block font-semibold text-white">{formatAmount(entry.owed)}</span>
+                          <span className="mt-0.5 block text-[10px] font-semibold text-cyan-200">Tap to view breakdown</span>
                         </button>
                         <p className="rounded-lg border border-white/10 bg-white/5 px-2 py-1">
                           Already paid share:{" "}
@@ -1136,7 +1205,7 @@ export default function Home() {
                       }`}
                     >
                       {categoryIcon(category)}
-                      <span className="pt-px">{category}</span>
+                      <span className="pt-px">{categoryLabel(category)}</span>
                     </button>
                   ))}
                 </div>
@@ -1452,7 +1521,7 @@ export default function Home() {
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="text-base font-bold">{expense.title}</p>
-                          <p className="mt-1 text-xs text-slate-300">{expense.category.toUpperCase()} | Paid by {payer}</p>
+                          <p className="mt-1 text-xs text-slate-300">{categoryLabel(expense.category).toUpperCase()} | Paid by {payer}</p>
                           {expense.receipt_url ? (
                             <button
                               type="button"
@@ -1666,6 +1735,16 @@ export default function Home() {
                               <span>Pay to {membersById.get(line.memberId)?.name ?? "Member"}</span>
                               <span className="font-semibold">{formatAmount(line.cents)}</span>
                             </p>
+                            {line.items.length > 0 ? (
+                              <div className="mt-2 space-y-1 border-t border-white/10 pt-2">
+                                {line.items.map((item) => (
+                                  <p key={`${item.expenseId}-${item.occurredOn}-${item.cents}`} className="flex items-center justify-between text-[11px] text-slate-300">
+                                    <span>{item.title} ({categoryLabel(item.category)})</span>
+                                    <span>{formatAmount(item.cents)}</span>
+                                  </p>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
                         ))
                       ) : (
@@ -1691,6 +1770,16 @@ export default function Home() {
                               <span>Receive from {membersById.get(line.memberId)?.name ?? "Member"}</span>
                               <span className="font-semibold">{formatAmount(line.cents)}</span>
                             </p>
+                            {line.items.length > 0 ? (
+                              <div className="mt-2 space-y-1 border-t border-white/10 pt-2">
+                                {line.items.map((item) => (
+                                  <p key={`${item.expenseId}-${item.occurredOn}-${item.cents}`} className="flex items-center justify-between text-[11px] text-slate-300">
+                                    <span>{item.title} ({categoryLabel(item.category)})</span>
+                                    <span>{formatAmount(item.cents)}</span>
+                                  </p>
+                                ))}
+                              </div>
+                            ) : null}
                             <div className="mt-2 flex justify-end">
                               <button
                                 type="button"
@@ -1780,7 +1869,7 @@ export default function Home() {
                       <div key={`${item.expenseId}-${item.occurredOn}`} className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">
                         <p className="text-xs font-semibold text-slate-100">{item.title}</p>
                         <p className="mt-0.5 text-[11px] text-slate-300">
-                          {item.category.toUpperCase()} | {item.occurredOn} | Paid by {item.payerName}
+                          {categoryLabel(item.category).toUpperCase()} | {item.occurredOn} | Paid by {item.payerName}
                         </p>
                         <p className="mt-1 flex items-center justify-between text-xs">
                           <span className="text-slate-300">Your share</span>
